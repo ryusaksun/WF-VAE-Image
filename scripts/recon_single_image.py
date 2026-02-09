@@ -2,100 +2,68 @@ import argparse
 
 import numpy as np
 import torch
-from einops import rearrange
-from torchvision.transforms import ToTensor, Compose, Resize, Lambda
 from PIL import Image
+from torchvision import transforms
+from torchvision.transforms import InterpolationMode
 
 import sys
 
 sys.path.append(".")
-from causalvideovae.model import *
+from wfimagevae.model import *
 
 
-def preprocess(video_data: torch.Tensor, short_size: int = 128) -> torch.Tensor:
-    transform = Compose(
+def preprocess(image: Image.Image, resolution: int) -> torch.Tensor:
+    transform = transforms.Compose(
         [
-            ToTensor(),
-            Lambda(lambda x: 2.0 * x - 1.0),
-            Resize(size=short_size),
+            transforms.Resize(
+                resolution,
+                interpolation=InterpolationMode.BICUBIC,
+                antialias=True,
+            ),
+            transforms.CenterCrop((resolution, resolution)),
+            transforms.ToTensor(),
+            transforms.Lambda(lambda x: 2.0 * x - 1.0),
         ]
     )
-    outputs = transform(video_data)
-    outputs = outputs.unsqueeze(0).unsqueeze(2)
-    return outputs
+    return transform(image).unsqueeze(0)
 
 
+@torch.no_grad()
 def main(args: argparse.Namespace):
-    # Set device and data type for computation
-    device = args.device
-    data_type = torch.bfloat16
+    data_type = torch.bfloat16 if args.mixed_precision == "bf16" else torch.float16
+    if args.mixed_precision == "fp32":
+        data_type = torch.float32
 
-    # Load the specified VAE model
     model_cls = ModelRegistry.get_model(args.model_name)
     vae = model_cls.from_pretrained(args.from_pretrained)
-    vae = vae.to(device).to(data_type)
-
+    vae = vae.to(args.device, dtype=data_type)
     vae.eval()
-    vae = vae.to(device, dtype=data_type)
 
-    with torch.no_grad():
-        # Preprocess the input video
-        x_vae = preprocess(Image.open(args.image_path), args.short_size)
-        x_vae = x_vae.to(device, dtype=data_type)
+    x = preprocess(Image.open(args.image_path).convert("RGB"), args.resolution)
+    x = x.to(args.device, dtype=data_type)
 
-        # Encode the video into latent space
-        latents = vae.encode(x_vae).latent_dist.sample()
-        latents = latents.to(data_type)
-        # Decode the latent vectors back to reconstructed video
-        image_recon = vae.decode(latents).sample
+    latents = vae.encode(x).latent_dist.sample().to(dtype=data_type)
+    image_recon = vae.decode(latents).sample
+    image_recon = image_recon[0].float().clamp(-1, 1)
 
-    x = image_recon[0, :, 0, :, :]
-    x = x.squeeze()
-    x = x.detach().float().cpu().numpy()
-    x = np.clip(x, -1, 1)
-    x = (x + 1) / 2
-    x = (255 * x).astype(np.uint8)
-    x = rearrange(x, "c h w -> h w c")
-    image = Image.fromarray(x)
-    image.save(args.rec_path)
+    image_recon = ((image_recon + 1) / 2).cpu().numpy()
+    image_recon = np.transpose(image_recon, (1, 2, 0))
+    image_recon = (255 * image_recon).astype(np.uint8)
+    Image.fromarray(image_recon).save(args.rec_path)
 
 
 if __name__ == "__main__":
-    # Define command-line arguments
-    parser = argparse.ArgumentParser()
-
-    # Video input and output paths
+    parser = argparse.ArgumentParser(description="Single-image VAE reconstruction")
+    parser.add_argument("--image_path", type=str, required=True)
+    parser.add_argument("--rec_path", type=str, required=True)
+    parser.add_argument("--model_name", type=str, default="WFVAE2Image")
+    parser.add_argument("--from_pretrained", type=str, required=True)
+    parser.add_argument("--resolution", type=int, default=1024)
+    parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument(
-        "--image_path", type=str, default="", help="Path to the input image file"
-    )
-    parser.add_argument(
-        "--rec_path", type=str, default="", help="Path to save the reconstructed image"
-    )
-
-    # Model settings
-    parser.add_argument(
-        "--model_name", type=str, default="vae", help="Name of the model to use"
-    )
-    parser.add_argument(
-        "--from_pretrained",
+        "--mixed_precision",
         type=str,
-        default="",
-        help="Path or identifier of the pretrained model",
+        default="bf16",
+        choices=["fp16", "bf16", "fp32"],
     )
-
-    # Video parameters
-    parser.add_argument(
-        "--short_size", type=int, default=336, help="Short size of the image"
-    )
-
-    # Device and memory settings
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="cuda",
-        help="Device to use for computation (e.g., 'cuda', 'cpu')",
-    )
-
-    # Parse the command-line arguments and run the main function
-    args = parser.parse_args()
-    main(args)
+    main(parser.parse_args())

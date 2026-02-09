@@ -1,4 +1,4 @@
 python scripts/save_hf_model.py \
-    --model_name WFVAE \
-    --from_pretrained /storage/lcm/WF-VAE_paper/backup/results/wfvae-16dim-L-release \
-    --output_path results/WF-VAE-L-16Chn
+    --model_name WFVAE2Image \
+    --from_pretrained /path/to/checkpoint_or_hf_model \
+    --output_path results/WFVAE2Image-1024

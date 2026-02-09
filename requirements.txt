@@ -4,6 +4,7 @@ imageio
 einops
 gdown
 numpy
+matplotlib
 opencv_python
 Pillow
 safetensors

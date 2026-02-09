@@ -1,0 +1,1 @@
+from .modeling_wfvae2_image import WFVAE2ImageModel

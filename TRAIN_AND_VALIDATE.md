@@ -1,91 +1,65 @@
-# Data Preparation
+# Data Preparation (Images)
 
-The training data can be organized efficiently by placing all videos recursively within a single directory. This approach simplifies the process, enabling seamless integration of multiple datasets for training purposes. To implement this, you may [download](https://github.com/cvdfoundation/kinetics-dataset) the Kinetics-400 dataset for both training and testing.
+Organize training images recursively under one root directory:
 
-```
-Training Dataset
-|——sub_dataset1
-    |——sub_sub_dataset1
-        |——video1.mp4
-        |——video2.mp4
-        ......
-    |——sub_sub_dataset2
-        |——video3.mp4
-        |——video4.mp4
-        ......
-|——sub_dataset2
-    |——video5.mp4
-    |——video6.mp4
-    ......
-|——video7.mp4
-|——video8.mp4
+```text
+train_images/
+|-- class_a/
+|   |-- 0001.jpg
+|   |-- 0002.png
+|-- class_b/
+|   |-- x1.webp
+|-- 10001.jpeg
 ```
 
-# Training
+Validation images should use a similar directory layout (`eval_images/`).
 
-To train the model using your dataset, update the `--video_path` and `--eval_video_path` parameters in `examples/train_ddp.sh` to point to your dataset. Then, execute the script by running:
+# Training (1024 default)
 
+Update `TRAIN_IMAGE_DIR` and `EVAL_IMAGE_DIR` in `examples/train_image_ddp.sh`, then run:
+
+```bash
+bash examples/train_image_ddp.sh
 ```
-bash examples/train_ddp.sh
-```
 
-This command will initiate the training process. Ensure that you are logged into your wandb account before starting the training.
+The default setup is:
+- resolution: `1024`
+- batch size: `2`
+- gradient accumulation: `8`
+- model: `WFVAE2Image` + `examples/wfvae2-image-1024.json`
+- discriminator loss: `LPIPSWithDiscriminator2D`
 
-Below, we introduce the key arguments necessary for training:
+Key arguments:
 
-| Argparse | Usage |
+| Arg | Usage |
 |:---|:---|
-|_Training size_||
-|`--num_frames`|The number of using frames for training videos|
-|`--resolution`|The resolution of the input to the VAE|
-|`--batch_size`|The local batch size in each GPU|
-|`--sample_rate`|The frame interval of when loading training videos|
-|_Data processing_||
-|`--video_path`|/path/to/dataset|
-|_Load weights_||
-|`--model_name`| `CausalVAE` or `WFVAE`|
-|`--model_config`|/path/to/config.json The model config of VAE. If you want to train from scratch use this parameter.|
-|`--pretrained_model_name_or_path`|A directory containing a model checkpoint and its config. Using this parameter will only load its weight but not load the state of the optimizer|
-|`--resume_from_checkpoint`|/path/to/checkpoint.ckpt. It will resume the training process from the checkpoint including the weight and the optimizer.|
+| `--image_path` | `/path/to/train/images` |
+| `--eval_image_path` | `/path/to/eval/images` |
+| `--resolution` | image train resolution (default `1024`) |
+| `--batch_size` | micro-batch size per GPU |
+| `--grad_accum_steps` | gradient accumulation steps (default `8`) |
+| `--model_config` | image model config JSON |
+| `--pretrained_model_name_or_path` | initialize from an existing checkpoint/HF folder |
+| `--resume_from_checkpoint` | resume optimizer/model/sampler states |
 
-# Validation
+# Reconstruction
 
-The evaluation process consists of two steps:
-
-Reconstruct videos in batches: `bash examples/gen_video.sh`
-Evaluate video metrics: `bash examples/eval.sh`
-
-To simplify the evaluation, environment variables are used for control. For step 1 (`bash examples/gen_video.sh`):
-
+Run batched reconstruction:
 
 ```bash
-# Experiment name
-EXP_NAME=test
-# Video parameters
-SAMPLE_RATE=1
-NUM_FRAMES=33
-RESOLUTION=256
-# Model weights
-CKPT=ckpt
-# Select subset size (0 for full set)
-SUBSET_SIZE=0
-# Dataset directory
-DATASET_DIR=test_video
+bash examples/recon_image.sh
 ```
 
-For step 2 (`bash examples/eval.sh`):
+# Evaluation
+
+Run image metrics (`LPIPS`, `PSNR`, `SSIM`):
 
 ```bash
-# Experiment name
-EXP_NAME=test
-# Video parameters
-SAMPLE_RATE=1
-NUM_FRAMES=33
-RESOLUTION=256
-# Evaluation metric
-METRIC=lpips
-# Select subset size (0 for full set)
-SUBSET_SIZE=0
-# Path to the ground truth videos, which can be saved during video reconstruction by setting `--output_origin`
-REAL_DATASET_DIR=video_gen/${EXP_NAME}_sr${SAMPLE_RATE}_nf${NUM_FRAMES}_res${RESOLUTION}_subset${SUBSET_SIZE}/origin
+bash examples/eval_image.sh
 ```
+
+Internally, this calls `scripts/eval_image.py` with image directories:
+- `--real_image_dir`
+- `--generated_image_dir`
+
+Legacy video scripts and examples are under `legacy/`.

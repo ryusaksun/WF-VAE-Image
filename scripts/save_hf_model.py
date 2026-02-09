@@ -2,7 +2,7 @@ import sys
 import argparse
 from pathlib import Path
 sys.path.append(".")
-from causalvideovae.model import *
+from wfimagevae.model import *
 
 def main():
     args = parse_args()

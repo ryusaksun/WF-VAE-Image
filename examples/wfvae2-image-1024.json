@@ -1,0 +1,35 @@
+{
+  "_class_name": "WFVAE2ImageModel",
+  "_diffusers_version": "0.30.2",
+  "latent_dim": 8,
+  "base_channels": [128, 256, 512],
+  "decoder_base_channels": [128, 256, 512],
+  "layer_res_type": ["ResnetBlock2D", "ResnetBlock2D"],
+  "encoder_num_resblocks": 2,
+  "encoder_energy_flow_size": 128,
+  "decoder_num_resblocks": 3,
+  "decoder_energy_flow_size": 128,
+  "dropout": 0.0,
+  "norm_type": "layernorm",
+  "mid_layers_type": ["ResnetBlock2D", "AttnBlock2D", "ResnetBlock2D"],
+  "scale": [
+    0.18215,
+    0.18215,
+    0.18215,
+    0.18215,
+    0.18215,
+    0.18215,
+    0.18215,
+    0.18215
+  ],
+  "shift": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0
+  ]
+}

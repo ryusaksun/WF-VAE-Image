@@ -1,0 +1,1 @@
+"""Legacy video model definitions."""

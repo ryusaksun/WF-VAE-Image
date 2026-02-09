@@ -158,37 +158,30 @@ CSV_FIELDS = [
 ]
 
 LIVE_PLOT_FIELDS = [field for field in CSV_FIELDS if field.startswith("train_")]
-LIVE_PLOT_GROUPS = [
-    (
-        "Generator",
-        [
-            "train_total_loss",
-            "train_g_loss",
-            "train_rec_loss",
-            "train_nll_loss",
-            "train_kl_loss",
-            "train_wl_loss",
-            "train_distill_loss",
-        ],
-    ),
-    (
-        "Discriminator",
-        [
-            "train_d_loss",
-            "train_disc_loss",
-            "train_logits_real",
-            "train_logits_fake",
-        ],
-    ),
-    (
-        "Weights & Stats",
-        [
-            "train_d_weight",
-            "train_disc_factor",
-            "train_logvar",
-            "train_latents_std",
-        ],
-    ),
+
+# Page 1: key losses — each metric gets its own subplot
+LIVE_PLOT_PAGE1_TITLE = "Key Losses"
+LIVE_PLOT_PAGE1_KEYS = [
+    "train_total_loss",
+    "train_rec_loss",
+    "train_kl_loss",
+    "train_g_loss",
+    "train_wl_loss",
+    "train_disc_loss",
+]
+
+# Page 2: other metrics — each metric gets its own subplot
+LIVE_PLOT_PAGE2_TITLE = "Other Metrics"
+LIVE_PLOT_PAGE2_KEYS = [
+    "train_nll_loss",
+    "train_d_loss",
+    "train_d_weight",
+    "train_disc_factor",
+    "train_logvar",
+    "train_latents_std",
+    "train_logits_real",
+    "train_logits_fake",
+    "train_distill_loss",
 ]
 
 
@@ -261,35 +254,49 @@ class LiveLossPlotter:
             for key in LIVE_PLOT_FIELDS:
                 self.values[key] = self.values[key][keep_from:]
 
+    def _render_page(self, keys, page_title, save_path):
+        active_keys = []
+        for key in keys:
+            series = np.array(self.values.get(key, []), dtype=float)
+            if series.size > 0 and not np.all(np.isnan(series)):
+                active_keys.append(key)
+        if not active_keys:
+            return
+
+        n = len(active_keys)
+        cols = 2
+        rows = (n + cols - 1) // cols
+        fig, axes = plt.subplots(rows, cols, figsize=(16, 3.5 * rows), squeeze=False)
+        fig.suptitle(page_title, fontsize=14, fontweight="bold")
+
+        for i, key in enumerate(active_keys):
+            row, col = divmod(i, cols)
+            ax = axes[row][col]
+            series = np.array(self.values[key], dtype=float)
+            ax.plot(self.steps, series, linewidth=1.2, color=f"C{i}")
+            ax.set_title(key, fontsize=10)
+            ax.grid(True, alpha=0.3)
+            ax.set_xlabel("global_step", fontsize=8)
+
+        # Hide unused subplots
+        for i in range(len(active_keys), rows * cols):
+            row, col = divmod(i, cols)
+            axes[row][col].set_visible(False)
+
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
+        fig.savefig(save_path, dpi=self.dpi)
+        plt.close(fig)
+
     def render(self):
         if plt is None:
             raise RuntimeError("matplotlib is not available.")
         if not self.steps:
             return
 
-        fig, axes = plt.subplots(len(LIVE_PLOT_GROUPS), 1, figsize=(16, 12), sharex=True)
-        if len(LIVE_PLOT_GROUPS) == 1:
-            axes = [axes]
-
-        for axis, (title, keys) in zip(axes, LIVE_PLOT_GROUPS):
-            has_curve = False
-            for key in keys:
-                series = np.array(self.values.get(key, []), dtype=float)
-                if series.size == 0 or np.all(np.isnan(series)):
-                    continue
-                axis.plot(self.steps, series, label=key, linewidth=1.2)
-                has_curve = True
-            axis.set_title(title)
-            axis.grid(True, alpha=0.3)
-            if has_curve:
-                axis.legend(loc="best", fontsize=8, ncol=2)
-            else:
-                axis.text(0.5, 0.5, "No data", ha="center", va="center", transform=axis.transAxes)
-
-        axes[-1].set_xlabel("global_step")
-        fig.tight_layout()
-        fig.savefig(self.path, dpi=self.dpi)
-        plt.close(fig)
+        base = self.path.with_suffix("")
+        suffix = self.path.suffix or ".png"
+        self._render_page(LIVE_PLOT_PAGE1_KEYS, LIVE_PLOT_PAGE1_TITLE, Path(f"{base}_key{suffix}"))
+        self._render_page(LIVE_PLOT_PAGE2_KEYS, LIVE_PLOT_PAGE2_TITLE, Path(f"{base}_other{suffix}"))
 
 
 def _extract_patch_maps(logits: torch.Tensor) -> torch.Tensor:
@@ -654,6 +661,9 @@ def valid(global_rank, rank, model, discriminator, val_dataloader, precision, ar
     num_image_log = args.eval_num_image_log
     if args.enable_val_image_dump and args.val_image_dump_max_samples > 0:
         num_image_log = max(num_image_log, args.val_image_dump_max_samples)
+    if args.enable_patch_score_vis:
+        # Ensure all patch-scored samples also have orig/recon images for visualization
+        num_image_log = max(num_image_log, len(val_dataloader.dataset))
 
     with torch.no_grad():
         for batch_idx, batch in enumerate(val_dataloader):
@@ -717,26 +727,27 @@ def valid(global_rank, rank, model, discriminator, val_dataloader, precision, ar
                         }
                     )
 
-            if global_rank == 0:
-                for idx in range(recon_01.shape[0]):
-                    if num_image_log <= 0:
-                        break
-                    sample_idx = int(sample_indices[idx])
-                    image_log.append(recon_01[idx].detach().cpu().numpy())
-                    orig_image_records.append(
-                        {
-                            "sample_idx": sample_idx,
-                            "orig_image": _tensor_image_to_uint8(inputs_01[idx]),
-                        }
-                    )
-                    recon_image_records.append(
-                        {
-                            "sample_idx": sample_idx,
-                            "recon_image": _tensor_image_to_uint8(recon_01[idx]),
-                        }
-                    )
-                    logged_sample_indices.append(sample_idx)
-                    num_image_log -= 1
+            for idx in range(recon_01.shape[0]):
+                if num_image_log <= 0:
+                    break
+                sample_idx = int(sample_indices[idx])
+                image_log.append(recon_01[idx].detach().cpu().numpy())
+                orig_image_records.append(
+                    {
+                        "sample_idx": sample_idx,
+                        "orig_image": _tensor_image_to_uint8(inputs_01[idx]),
+                    }
+                )
+                recon_image_records.append(
+                    {
+                        "sample_idx": sample_idx,
+                        "recon_image": _tensor_image_to_uint8(recon_01[idx]),
+                    }
+                )
+                logged_sample_indices.append(sample_idx)
+                num_image_log -= 1
+
+            if global_rank == 0 and bar is not None:
                 bar.update()
 
     return (
@@ -1176,20 +1187,22 @@ def train(args):
                     }
                 )
 
+            # Compute unified sample indices for both patch scores and val images
+            unified_max_samples = max(
+                args.patch_score_vis_max_samples if args.enable_patch_score_vis and args.patch_score_vis_max_samples > 0 else 0,
+                args.val_image_dump_max_samples if args.enable_val_image_dump and args.val_image_dump_max_samples > 0 else 0,
+                args.eval_num_image_log,
+            )
+            # Prefer logged sample indices (processing order); fall back to common keys
+            unified_sample_indices = valid_logged_sample_indices[:unified_max_samples]
+            if not unified_sample_indices:
+                common_indices = sorted(
+                    set(orig_image_by_sample_idx.keys()) & set(recon_image_by_sample_idx.keys())
+                )
+                unified_sample_indices = common_indices[:unified_max_samples]
+
             if args.enable_patch_score_vis and len(valid_patch_records) > 0:
                 try:
-                    vis_max_samples = (
-                        args.patch_score_vis_max_samples
-                        if args.patch_score_vis_max_samples > 0
-                        else args.eval_num_image_log
-                    )
-                    selected_sample_indices = None
-                    if vis_max_samples > 0:
-                        selected_sample_indices = [
-                            int(record["sample_idx"])
-                            for record in valid_patch_records[:vis_max_samples]
-                        ]
-
                     patch_score_dir = ckpt_dir / "val_patch_scores" / f"step_{current_step:08d}{suffix}"
                     save_patch_scores(
                         valid_patch_records,
@@ -1197,8 +1210,8 @@ def train(args):
                         val_dataset=val_dataset,
                         eval_resize_resolution=args.eval_resolution,
                         eval_crop_size=args.eval_crop_size,
-                        vis_max_samples=vis_max_samples,
-                        selected_sample_indices=selected_sample_indices,
+                        vis_max_samples=len(unified_sample_indices),
+                        selected_sample_indices=unified_sample_indices if unified_sample_indices else None,
                         recon_image_by_sample_idx=recon_image_by_sample_idx,
                         save_summary=args.patch_score_save_summary,
                         save_maps=args.patch_score_save_maps,
@@ -1217,40 +1230,27 @@ def train(args):
                 except Exception as exc:
                     logger.warning(f"PatchGAN patch score export failed at step {current_step}: {exc}")
 
-            if args.enable_val_image_dump:
+            if args.enable_val_image_dump and unified_sample_indices:
                 try:
-                    dump_max_samples = (
-                        args.val_image_dump_max_samples
-                        if args.val_image_dump_max_samples > 0
-                        else args.eval_num_image_log
-                    )
-                    selected_sample_indices = valid_logged_sample_indices[:dump_max_samples]
-                    if not selected_sample_indices:
-                        common_indices = sorted(
-                            set(orig_image_by_sample_idx.keys()) & set(recon_image_by_sample_idx.keys())
+                    orig_dir = ckpt_dir / "val_images" / "original"
+                    recon_dir = ckpt_dir / "val_images" / "reconstructed"
+                    orig_dir.mkdir(exist_ok=True, parents=True)
+                    recon_dir.mkdir(exist_ok=True, parents=True)
+
+                    num_saved = 0
+                    for idx, sample_idx in enumerate(unified_sample_indices):
+                        orig_img = orig_image_by_sample_idx.get(sample_idx)
+                        recon_img = recon_image_by_sample_idx.get(sample_idx)
+                        if orig_img is None or recon_img is None:
+                            continue
+                        Image.fromarray(orig_img).save(
+                            orig_dir / f"step_{current_step}_original{suffix}_{idx:03d}_sid{sample_idx}.png"
                         )
-                        selected_sample_indices = common_indices[:dump_max_samples]
-
-                    if selected_sample_indices:
-                        orig_dir = ckpt_dir / "val_images" / "original"
-                        recon_dir = ckpt_dir / "val_images" / "reconstructed"
-                        orig_dir.mkdir(exist_ok=True, parents=True)
-                        recon_dir.mkdir(exist_ok=True, parents=True)
-
-                        num_saved = 0
-                        for idx, sample_idx in enumerate(selected_sample_indices):
-                            orig_img = orig_image_by_sample_idx.get(sample_idx)
-                            recon_img = recon_image_by_sample_idx.get(sample_idx)
-                            if orig_img is None or recon_img is None:
-                                continue
-                            Image.fromarray(orig_img).save(
-                                orig_dir / f"step_{current_step}_original{suffix}_{idx:03d}_sid{sample_idx}.png"
-                            )
-                            Image.fromarray(recon_img).save(
-                                recon_dir / f"step_{current_step}_recon{suffix}_{idx:03d}_sid{sample_idx}.png"
-                            )
-                            num_saved += 1
-                        logger.info(f"Validation images saved: {num_saved} pair(s) with suffix `{suffix or '_main'}`.")
+                        Image.fromarray(recon_img).save(
+                            recon_dir / f"step_{current_step}_recon{suffix}_{idx:03d}_sid{sample_idx}.png"
+                        )
+                        num_saved += 1
+                    logger.info(f"Validation images saved: {num_saved} pair(s) with suffix `{suffix or '_main'}`.")
                 except Exception as exc:
                     logger.warning(f"Validation image dump failed at step {current_step}: {exc}")
         return valid_psnr, valid_ssim, valid_lpips

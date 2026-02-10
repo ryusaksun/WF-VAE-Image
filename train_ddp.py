@@ -20,7 +20,11 @@ from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader, Subset
 
 from wfimagevae.dataset.ddp_sampler import CustomDistributedSampler
-from wfimagevae.dataset.image_dataset import TrainImageDataset, ValidImageDataset
+from wfimagevae.dataset.image_dataset import (
+    BaseImageDataset,
+    TrainImageDataset,
+    ValidImageDataset,
+)
 from wfimagevae.eval.cal_lpips import calculate_lpips
 from wfimagevae.eval.cal_psnr import calculate_psnr
 from wfimagevae.eval.cal_ssim import calculate_ssim
@@ -121,6 +125,35 @@ def save_checkpoint(
         filepath,
     )
     return filepath
+
+
+def warmup_dataset_index_cache(
+    image_path: str,
+    eval_image_path: str,
+    use_manifest: bool,
+    global_rank: int,
+    logger,
+):
+    if use_manifest:
+        return
+
+    if global_rank == 0:
+        try:
+            BaseImageDataset(
+                image_folder=image_path,
+                cache_file="idx_image.pkl",
+                is_main_process=True,
+                use_manifest=False,
+            )
+            BaseImageDataset(
+                image_folder=eval_image_path,
+                cache_file="idx_image_eval.pkl",
+                is_main_process=True,
+                use_manifest=False,
+            )
+        except Exception as exc:
+            logger.warning(f"Dataset index cache warmup failed: {exc}")
+    dist.barrier()
 
 
 def get_exp_name(args):
@@ -690,12 +723,16 @@ def valid(global_rank, rank, model, discriminator, val_dataloader, precision, ar
     if args.enable_val_image_dump and args.val_image_dump_max_samples > 0:
         num_image_log = max(num_image_log, args.val_image_dump_max_samples)
     if args.enable_patch_score_vis:
-        # Ensure all patch-scored samples also have orig/recon images for visualization
-        num_image_log = max(num_image_log, len(val_dataloader.dataset))
+        patch_image_budget = (
+            args.patch_score_vis_max_samples
+            if args.patch_score_vis_max_samples > 0
+            else args.eval_num_image_log
+        )
+        num_image_log = max(num_image_log, patch_image_budget)
 
     with torch.no_grad():
         for batch_idx, batch in enumerate(val_dataloader):
-            inputs = batch["image"].to(rank)
+            inputs = batch["image"].to(rank, non_blocking=True)
             sample_indices = batch.get("index")
             if sample_indices is None:
                 start_idx = batch_idx * inputs.shape[0]
@@ -886,6 +923,8 @@ def train(args):
         raise ValueError("`--patch_score_min_cell_px` must be >= 0.")
     if args.val_image_dump_max_samples < 0:
         raise ValueError("`--val_image_dump_max_samples` must be >= 0.")
+    if args.dataloader_prefetch_factor <= 0:
+        raise ValueError("`--dataloader_prefetch_factor` must be >= 1.")
 
     ckpt_dir = Path(args.ckpt_dir) / Path(get_exp_name(args))
     if global_rank == 0:
@@ -950,6 +989,14 @@ def train(args):
         find_unused_parameters=args.find_unused_parameters,
     )
 
+    warmup_dataset_index_cache(
+        image_path=args.image_path,
+        eval_image_path=args.eval_image_path,
+        use_manifest=args.use_manifest,
+        global_rank=global_rank,
+        logger=logger,
+    )
+
     dataset = TrainImageDataset(
         image_folder=args.image_path,
         resolution=args.resolution,
@@ -959,14 +1006,20 @@ def train(args):
         manifest_path=args.image_path if args.use_manifest else None,
     )
     ddp_sampler = CustomDistributedSampler(dataset)
-    dataloader = DataLoader(
-        dataset,
+    train_num_workers = max(0, args.dataset_num_worker)
+    train_persistent_workers = train_num_workers > 0 and (not args.disable_persistent_workers)
+    train_loader_kwargs = dict(
+        dataset=dataset,
         batch_size=args.batch_size,
         sampler=ddp_sampler,
         pin_memory=True,
-        num_workers=args.dataset_num_worker,
+        num_workers=train_num_workers,
         drop_last=True,
+        persistent_workers=train_persistent_workers,
     )
+    if train_num_workers > 0:
+        train_loader_kwargs["prefetch_factor"] = args.dataloader_prefetch_factor
+    dataloader = DataLoader(**train_loader_kwargs)
 
     val_dataset = ValidImageDataset(
         image_dir=args.eval_image_path,
@@ -981,13 +1034,19 @@ def train(args):
         indices = list(range(min(args.eval_subset_size, len(val_dataset))))
         val_dataset = Subset(val_dataset, indices=indices)
     val_sampler = CustomDistributedSampler(val_dataset)
-    val_dataloader = DataLoader(
-        val_dataset,
+    val_num_workers = max(1, args.dataset_num_worker // 2)
+    val_persistent_workers = val_num_workers > 0 and (not args.disable_persistent_workers)
+    val_loader_kwargs = dict(
+        dataset=val_dataset,
         batch_size=args.eval_batch_size,
         sampler=val_sampler,
         pin_memory=True,
-        num_workers=max(1, args.dataset_num_worker // 2),
+        num_workers=val_num_workers,
+        persistent_workers=val_persistent_workers,
     )
+    if val_num_workers > 0:
+        val_loader_kwargs["prefetch_factor"] = args.dataloader_prefetch_factor
+    val_dataloader = DataLoader(**val_loader_kwargs)
 
     modules_to_train = [module for module in model.module.get_decoder()]
     if args.freeze_encoder:
@@ -1104,6 +1163,13 @@ def train(args):
         logger.info(f"Mixed precision: {args.mix_precision}")
         logger.info(f"Gradient accumulation: {args.grad_accum_steps}")
         logger.info(f"Train samples: {len(dataset)}")
+        logger.info(
+            "DataLoader: "
+            f"train_workers={train_num_workers}, val_workers={val_num_workers}, "
+            f"train_persistent_workers={train_persistent_workers}, "
+            f"val_persistent_workers={val_persistent_workers}, "
+            f"prefetch_factor={args.dataloader_prefetch_factor}"
+        )
         logger.info(
             f"Global batch size per update: {args.batch_size} x {world_size} x {args.grad_accum_steps}"
         )
@@ -1331,12 +1397,18 @@ def train(args):
                     step_gen = True
                     step_dis = False
 
-                # Forward pass (shared by both G and D phases)
-                with torch.amp.autocast("cuda", dtype=precision):
-                    outputs = model(inputs)
-                    recon = outputs.sample
-                    posterior = outputs.latent_dist
-                    wavelet_coeffs = outputs.extra_output if args.wavelet_loss else None
+                # Forward pass: D-step does not require autograd graph for VAE.
+                if step_gen:
+                    with torch.amp.autocast("cuda", dtype=precision):
+                        outputs = model(inputs)
+                else:
+                    with torch.no_grad():
+                        with torch.amp.autocast("cuda", dtype=precision):
+                            outputs = model(inputs)
+
+                recon = outputs.sample
+                posterior = outputs.latent_dist
+                wavelet_coeffs = outputs.extra_output if (args.wavelet_loss and step_gen) else None
 
                 # Generator step
                 if step_gen:
@@ -1429,26 +1501,49 @@ def train(args):
                 cur_d_log = d_log if step_dis else last_d_log
                 cur_posterior = last_posterior if last_posterior is not None else posterior
 
-                latents_std = cur_posterior.sample().std().item() if cur_posterior is not None else 0.0
-                train_metrics = {
-                    "train_total_loss": to_scalar(cur_g_log.get("train/total_loss")),
-                    "train_logvar": to_scalar(cur_g_log.get("train/logvar")),
-                    "train_kl_loss": to_scalar(cur_g_log.get("train/kl_loss")),
-                    "train_nll_loss": to_scalar(cur_g_log.get("train/nll_loss")),
-                    "train_rec_loss": to_scalar(cur_g_log.get("train/rec_loss")),
-                    "train_wl_loss": to_scalar(cur_g_log.get("train/wl_loss")),
-                    "train_distill_loss": to_scalar(cur_g_log.get("train/distill_loss")),
-                    "train_d_weight": to_scalar(cur_g_log.get("train/d_weight")),
-                    "train_disc_factor": to_scalar(cur_g_log.get("train/disc_factor")),
-                    "train_g_loss": to_scalar(cur_g_loss),
-                    "train_d_loss": to_scalar(cur_d_loss),
-                    "train_disc_loss": to_scalar(cur_d_log.get("train/disc_loss")),
-                    "train_logits_real": to_scalar(cur_d_log.get("train/logits_real")),
-                    "train_logits_fake": to_scalar(cur_d_log.get("train/logits_fake")),
-                    "train_latents_std": to_scalar(latents_std),
-                }
+                need_csv_log = (
+                    global_rank == 0
+                    and csv_logger is not None
+                    and current_step % args.csv_log_steps == 0
+                )
+                need_live_plot = (
+                    global_rank == 0
+                    and live_plotter is not None
+                    and not live_plot_failed
+                    and current_step % args.live_plot_every_steps == 0
+                )
+                need_wandb_log = global_rank == 0 and current_step % args.log_steps == 0
+                need_latents_std = need_csv_log or need_live_plot or need_wandb_log
 
-                if global_rank == 0 and csv_logger is not None and current_step % args.csv_log_steps == 0:
+                latents_std = None
+                if need_latents_std:
+                    latents_std = (
+                        cur_posterior.sample().std().item()
+                        if cur_posterior is not None
+                        else 0.0
+                    )
+
+                train_metrics = None
+                if need_csv_log or need_live_plot:
+                    train_metrics = {
+                        "train_total_loss": to_scalar(cur_g_log.get("train/total_loss")),
+                        "train_logvar": to_scalar(cur_g_log.get("train/logvar")),
+                        "train_kl_loss": to_scalar(cur_g_log.get("train/kl_loss")),
+                        "train_nll_loss": to_scalar(cur_g_log.get("train/nll_loss")),
+                        "train_rec_loss": to_scalar(cur_g_log.get("train/rec_loss")),
+                        "train_wl_loss": to_scalar(cur_g_log.get("train/wl_loss")),
+                        "train_distill_loss": to_scalar(cur_g_log.get("train/distill_loss")),
+                        "train_d_weight": to_scalar(cur_g_log.get("train/d_weight")),
+                        "train_disc_factor": to_scalar(cur_g_log.get("train/disc_factor")),
+                        "train_g_loss": to_scalar(cur_g_loss),
+                        "train_d_loss": to_scalar(cur_d_loss),
+                        "train_disc_loss": to_scalar(cur_d_log.get("train/disc_loss")),
+                        "train_logits_real": to_scalar(cur_d_log.get("train/logits_real")),
+                        "train_logits_fake": to_scalar(cur_d_log.get("train/logits_fake")),
+                        "train_latents_std": to_scalar(latents_std),
+                    }
+
+                if need_csv_log:
                     csv_logger.log(
                         {
                             "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -1461,12 +1556,7 @@ def train(args):
                         }
                     )
 
-                if (
-                    global_rank == 0
-                    and live_plotter is not None
-                    and not live_plot_failed
-                    and current_step % args.live_plot_every_steps == 0
-                ):
+                if need_live_plot:
                     live_plotter.update(current_step, train_metrics)
                     try:
                         live_plotter.render()
@@ -1477,7 +1567,7 @@ def train(args):
                             "Disable live plotting for the remaining run."
                         )
 
-                if global_rank == 0 and current_step % args.log_steps == 0:
+                if need_wandb_log:
                     wandb_log = {}
                     if cur_g_loss is not None:
                         wandb_log["train/generator_loss"] = cur_g_loss.item()
@@ -1485,7 +1575,9 @@ def train(args):
                         wandb_log["train/discriminator_loss"] = cur_d_loss.item()
                     if cur_g_log.get("train/rec_loss") is not None:
                         wandb_log["train/rec_loss"] = cur_g_log["train/rec_loss"]
-                    wandb_log["train/latents_std"] = latents_std
+                    wandb_log["train/latents_std"] = (
+                        latents_std if latents_std is not None else 0.0
+                    )
                     wandb.log(wandb_log, step=current_step)
 
                 if current_step % args.eval_steps == 0 or current_step == 1:
@@ -1542,12 +1634,12 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--log_steps", type=int, default=10)
-    parser.add_argument("--csv_log_steps", type=int, default=1)
+    parser.add_argument("--csv_log_steps", type=int, default=200)
     parser.add_argument("--csv_log_path", type=str, default="")
     parser.add_argument("--disable_csv_log", action="store_true")
     parser.add_argument("--enable_live_plot", action="store_true", default=True)
     parser.add_argument("--disable_live_plot", action="store_false", dest="enable_live_plot")
-    parser.add_argument("--live_plot_every_steps", type=int, default=1)
+    parser.add_argument("--live_plot_every_steps", type=int, default=200)
     parser.add_argument("--live_plot_path", type=str, default="")
     parser.add_argument("--live_plot_history", type=int, default=0)
     parser.add_argument("--live_plot_dpi", type=int, default=150)
@@ -1600,7 +1692,7 @@ def main():
     parser.add_argument("--loss_type", type=str, default="l1")
     parser.add_argument("--logvar_init", type=float, default=0.0)
 
-    parser.add_argument("--eval_steps", type=int, default=200)
+    parser.add_argument("--eval_steps", type=int, default=500)
     parser.add_argument("--eval_image_path", type=str, required=True)
     parser.add_argument("--eval_resolution", type=int, default=1024)
     parser.add_argument("--eval_crop_size", type=int, default=1024)
@@ -1609,6 +1701,8 @@ def main():
     parser.add_argument("--eval_num_image_log", type=int, default=8)
 
     parser.add_argument("--dataset_num_worker", type=int, default=8)
+    parser.add_argument("--dataloader_prefetch_factor", type=int, default=2)
+    parser.add_argument("--disable_persistent_workers", action="store_true")
 
     parser.add_argument("--ema", action="store_true")
     parser.add_argument("--ema_decay", type=float, default=0.999)

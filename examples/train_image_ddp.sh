@@ -26,7 +26,7 @@ torchrun \
     --lr 0.00001 \
     --epochs 10 \
     --save_ckpt_step 500 \
-    --eval_steps 200 \
+    --eval_steps 500 \
     --eval_batch_size 2 \
     --eval_subset_size 64 \
     --disc_start 1000 \

@@ -287,6 +287,9 @@ class LiveLossPlotter:
             with open(csv_path, "r", encoding="utf-8") as f:
                 reader = csv.DictReader(f)
                 for row in reader:
+                    phase = row.get("phase", "")
+                    if phase and not phase.startswith("train"):
+                        continue
                     step_str = row.get("global_step", "")
                     if not step_str:
                         continue

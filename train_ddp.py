@@ -52,6 +52,9 @@ def set_random_seed(seed):
 def ddp_setup():
     dist.init_process_group(backend="nccl")
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
 
 
 def setup_logger(rank):
@@ -1380,6 +1383,7 @@ def train(args):
             last_d_loss = None
             last_d_log = {}
             last_posterior = None
+            _prev_step_gen = None
 
             for batch_idx, batch in enumerate(dataloader):
                 inputs = batch["image"].to(rank, non_blocking=True)
@@ -1389,20 +1393,22 @@ def train(args):
                     current_step % 2 == 1
                     and current_step >= disc.module.discriminator_iter_start
                 ):
-                    set_modules_requires_grad(modules_to_train, False)
                     step_gen = False
                     step_dis = True
                 else:
-                    set_modules_requires_grad(modules_to_train, True)
                     step_gen = True
                     step_dis = False
+
+                if step_gen != _prev_step_gen:
+                    set_modules_requires_grad(modules_to_train, step_gen)
+                    _prev_step_gen = step_gen
 
                 # Forward pass: D-step does not require autograd graph for VAE.
                 if step_gen:
                     with torch.amp.autocast("cuda", dtype=precision):
                         outputs = model(inputs)
                 else:
-                    with torch.no_grad():
+                    with torch.inference_mode():
                         with torch.amp.autocast("cuda", dtype=precision):
                             outputs = model(inputs)
 

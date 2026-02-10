@@ -1069,15 +1069,24 @@ def train(args):
             list(filter(lambda p: p.requires_grad, module.parameters()))
         )
 
+    gen_lr = args.lr
+    disc_lr = args.lr * args.disc_lr_ratio
+
     gen_optimizer = torch.optim.AdamW(
         parameters_to_train,
-        lr=args.lr,
+        lr=gen_lr,
         weight_decay=args.weight_decay,
     )
     disc_optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, disc.module.discriminator.parameters()),
-        lr=args.lr,
+        lr=disc_lr,
         weight_decay=args.weight_decay,
+    )
+    logger.info(
+        "Optimizer LR config: gen_lr=%.2e, disc_lr=%.2e (ratio=%.2f)",
+        gen_lr,
+        disc_lr,
+        args.disc_lr_ratio,
     )
 
     scaler = torch.amp.GradScaler("cuda")
@@ -1670,14 +1679,15 @@ def main():
     parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--grad_accum_steps", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-5)
+    parser.add_argument("--disc_lr_ratio", type=float, default=4.0)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--log_steps", type=int, default=10)
-    parser.add_argument("--csv_log_steps", type=int, default=200)
+    parser.add_argument("--csv_log_steps", type=int, default=10)
     parser.add_argument("--csv_log_path", type=str, default="")
     parser.add_argument("--disable_csv_log", action="store_true")
     parser.add_argument("--enable_live_plot", action="store_true", default=True)
     parser.add_argument("--disable_live_plot", action="store_false", dest="enable_live_plot")
-    parser.add_argument("--live_plot_every_steps", type=int, default=200)
+    parser.add_argument("--live_plot_every_steps", type=int, default=10)
     parser.add_argument("--live_plot_path", type=str, default="")
     parser.add_argument("--live_plot_history", type=int, default=0)
     parser.add_argument("--live_plot_dpi", type=int, default=150)

@@ -102,7 +102,7 @@ def main(args):
     for batch in tqdm(dataloader, disable=not accelerator.is_local_main_process):
         x = batch["image"].to(device=device, dtype=data_type)
 
-        latents = vae.encode(x).latent_dist.sample().to(data_type)
+        latents = vae.encode(x).latent_dist.mode().to(data_type)
         image_recon = vae.decode(latents).sample
         image_recon = ((image_recon.float().clamp(-1, 1) + 1) / 2).contiguous()
         image_input = ((x.float().clamp(-1, 1) + 1) / 2).contiguous()

@@ -7,7 +7,7 @@
   "layer_res_type": ["ResnetBlock2D", "ResnetBlock2D"],
   "encoder_num_resblocks": 2,
   "encoder_energy_flow_size": 128,
-  "decoder_num_resblocks": 3,
+  "decoder_num_resblocks": 2,
   "decoder_energy_flow_size": 128,
   "dropout": 0.0,
   "norm_type": "layernorm",

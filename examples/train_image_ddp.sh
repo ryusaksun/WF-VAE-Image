@@ -21,7 +21,7 @@ torchrun \
     --resolution 1024 \
     --eval_resolution 1024 \
     --eval_crop_size 1024 \
-    --batch_size 2 \
+    --batch_size 4 \
     --grad_accum_steps 8 \
     --lr 0.00001 \
     --epochs 10 \

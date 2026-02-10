@@ -243,6 +243,34 @@ class LiveLossPlotter:
         self.steps = []
         self.values = {key: [] for key in LIVE_PLOT_FIELDS}
 
+    def load_history_from_csv(self, csv_path: Path):
+        csv_path = Path(csv_path)
+        if not csv_path.exists():
+            return
+        try:
+            with open(csv_path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    step_str = row.get("global_step", "")
+                    if not step_str:
+                        continue
+                    try:
+                        step = int(step_str)
+                    except (ValueError, TypeError):
+                        continue
+                    self.steps.append(step)
+                    for key in LIVE_PLOT_FIELDS:
+                        raw = row.get(key, "")
+                        if raw == "" or raw is None:
+                            self.values[key].append(float("nan"))
+                        else:
+                            try:
+                                self.values[key].append(float(raw))
+                            except (ValueError, TypeError):
+                                self.values[key].append(float("nan"))
+        except Exception:
+            return
+
     def update(self, step: int, metrics: dict):
         self.steps.append(int(step))
         for key in LIVE_PLOT_FIELDS:
@@ -1056,6 +1084,10 @@ def train(args):
                 history=args.live_plot_history,
                 dpi=args.live_plot_dpi,
             )
+            if csv_logger is not None:
+                live_plotter.load_history_from_csv(csv_logger.path)
+                if live_plotter.steps:
+                    logger.info(f"Live plotter restored {len(live_plotter.steps)} history points from CSV.")
             logger.info(
                 f"Live loss plot enabled: `{live_plot_path}` "
                 f"(every {args.live_plot_every_steps} update step(s))."

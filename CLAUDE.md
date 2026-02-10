@@ -16,11 +16,11 @@ pip install -e .
 
 ## Common Commands
 
-### Training (distributed, 8 GPUs default)
+### Training (distributed)
 ```bash
-bash examples/train_image_ddp.sh
+bash train_wfimagevae.sh
 ```
-Set `TRAIN_IMAGE_DIR` and `EVAL_IMAGE_DIR` in the script before running. Uses `torchrun` with DDP. The entrypoint `train_image_ddp.py` delegates to `train_ddp.py`.
+See script header for usage (multi-GPU: `GPU=0,1,2,3 bash train_wfimagevae.sh`, resume, manifest config, etc.). Uses `torchrun` with DDP. The entrypoint `train_image_ddp.py` delegates to `train_ddp.py`.
 
 ### Single Image Reconstruction
 ```bash
@@ -77,7 +77,7 @@ No pytest suite exists. Validate behavior changes by running a small-subset reco
 
 ### Model Configuration
 
-Model architecture is configured via JSON (`examples/wfvae2-image-1024.json`). Key parameters: `latent_dim` (16), `base_channels` ([128, 256, 512]), `encoder/decoder_energy_flow_size` (128), `norm_type` ("layernorm"), `mid_layers_type`, `scale`/`shift` for latent normalization.
+Model architecture is configured via JSON (`examples/wfvae2-image-1024.json`). Key parameters: `latent_dim` (8), `base_channels` ([128, 256, 512]), `encoder/decoder_energy_flow_size` (128), `norm_type` ("layernorm"), `mid_layers_type`, `scale`/`shift` for latent normalization.
 
 ## Code Style
 

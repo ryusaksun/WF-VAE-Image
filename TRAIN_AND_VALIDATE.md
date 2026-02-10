@@ -16,15 +16,16 @@ Validation images should use a similar directory layout (`eval_images/`).
 
 # Training (1024 default)
 
-Update `TRAIN_IMAGE_DIR` and `EVAL_IMAGE_DIR` in `examples/train_image_ddp.sh`, then run:
+Run the training script:
 
 ```bash
-bash examples/train_image_ddp.sh
+bash train_wfimagevae.sh
 ```
 
-The default setup is:
-- resolution: `1024`
-- batch size: `2`
+See `train_wfimagevae.sh` header comments for usage (multi-GPU, resume, manifest, etc.).
+
+The default setup for 1024 resolution:
+- batch size: `4`
 - gradient accumulation: `8`
 - model: `WFVAE2Image` + `examples/wfvae2-image-1024.json`
 - discriminator loss: `LPIPSWithDiscriminator2D`

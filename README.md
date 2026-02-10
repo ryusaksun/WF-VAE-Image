@@ -27,13 +27,16 @@ pip install -e .
 Use the provided launcher:
 
 ```bash
-bash examples/train_image_ddp.sh
+bash train_wfimagevae.sh
 ```
 
-Important defaults in `train_image_ddp.py` (delegates to `train_ddp.py`):
+See `train_wfimagevae.sh` header comments for usage examples (multi-GPU, resume, manifest split, etc.). The entrypoint `train_image_ddp.py` delegates to `train_ddp.py`.
+
+Important defaults:
 
 - `--model_name WFVAE2Image`
 - `--resolution 1024`
+- `--batch_size 4`
 - `--grad_accum_steps 8`
 - `--disc_cls wfimagevae.model.losses.LPIPSWithDiscriminator2D`
 

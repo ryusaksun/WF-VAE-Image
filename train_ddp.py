@@ -1086,6 +1086,7 @@ def train(args):
 
     start_epoch = 0
     current_step = 0
+    checkpoint = None
     if args.resume_from_checkpoint:
         if not os.path.isfile(args.resume_from_checkpoint):
             raise ValueError(f"`{args.resume_from_checkpoint}` is not a valid checkpoint.")
@@ -1120,6 +1121,34 @@ def train(args):
         logger.warning(f"EMA enabled with decay={args.ema_decay}.")
         ema = EMA(model, args.ema_decay)
         ema.register()
+        if checkpoint is not None:
+            loaded_ema_state = checkpoint.get("ema_state_dict", {})
+            if isinstance(loaded_ema_state, dict) and len(loaded_ema_state) > 0:
+                restored = 0
+                missing = 0
+                for name, param in model.named_parameters():
+                    if not param.requires_grad:
+                        continue
+                    ema_value = loaded_ema_state.get(name)
+                    if ema_value is None and name.startswith("module."):
+                        ema_value = loaded_ema_state.get(name[len("module."):])
+                    if ema_value is None and (not name.startswith("module.")):
+                        ema_value = loaded_ema_state.get(f"module.{name}")
+                    if torch.is_tensor(ema_value):
+                        ema.shadow[name] = ema_value.to(
+                            device=param.device, dtype=param.dtype
+                        ).clone()
+                        restored += 1
+                    else:
+                        missing += 1
+                logger.info(
+                    f"EMA state restored from checkpoint: restored={restored}, missing={missing}."
+                )
+            else:
+                logger.warning(
+                    "Checkpoint has no valid `ema_state_dict`; EMA shadow will be initialized "
+                    "from current model parameters."
+                )
 
     num_micro_batches_per_epoch = len(dataloader)
     num_update_steps_per_epoch = math.ceil(num_micro_batches_per_epoch / args.grad_accum_steps)
@@ -1408,7 +1437,7 @@ def train(args):
                     with torch.amp.autocast("cuda", dtype=precision):
                         outputs = model(inputs)
                 else:
-                    with torch.inference_mode():
+                    with torch.no_grad():
                         with torch.amp.autocast("cuda", dtype=precision):
                             outputs = model(inputs)
 

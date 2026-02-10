@@ -15,7 +15,7 @@
 - `conda create -n wfvae python=3.10 -y && conda activate wfvae`: create the recommended environment.
 - `pip install -r requirements.txt`: install runtime dependencies.
 - `pip install -e .`: install this repo in editable mode for local development.
-- `bash examples/train_image_ddp.sh`: launch distributed image training via `torchrun`.
+- `bash train_wfimagevae.sh`: launch distributed image training via `torchrun`.
 - `bash examples/recon_image.sh`: reconstruct validation images in batches.
 - `bash examples/eval_image.sh`: compute image reconstruction metrics (`lpips`, `psnr`, `ssim`).
 
